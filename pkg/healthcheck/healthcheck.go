@@ -207,7 +207,7 @@ var ExpectedServiceAccountNames = []string{
 
 var (
 	retryWindow    = 5 * time.Second
-	requestTimeout = 30 * time.Second
+	RequestTimeout = 30 * time.Second
 )
 
 // Resource provides a way to describe a Kubernetes object, kind, and name.
@@ -422,7 +422,6 @@ func NewHealthChecker(categoryIDs []CategoryID, options *Options) *HealthChecker
 	}
 
 	hc.categories = append(hc.allCategories(), hc.addOnCategories()...)
-	hc.categories = append(hc.categories, hc.multiClusterCategory()...)
 
 	checkMap := map[CategoryID]struct{}{}
 	for _, category := range categoryIDs {
@@ -464,7 +463,7 @@ func (hc *HealthChecker) allCategories() []Category {
 					hintAnchor:  "k8s-api",
 					fatal:       true,
 					check: func(context.Context) (err error) {
-						hc.kubeAPI, err = k8s.NewAPI(hc.KubeConfig, hc.KubeContext, hc.Impersonate, hc.ImpersonateGroup, requestTimeout)
+						hc.kubeAPI, err = k8s.NewAPI(hc.KubeConfig, hc.KubeContext, hc.Impersonate, hc.ImpersonateGroup, RequestTimeout)
 						return
 					},
 				},
@@ -1550,9 +1549,19 @@ func (hc *HealthChecker) RunChecks(observer CheckObserver) bool {
 	return success
 }
 
+// LinkerdConfigGlobal gets the Linkerd global configuration values.
+func (hc *HealthChecker) LinkerdConfigGlobal() *l5dcharts.Global {
+	return hc.linkerdConfig.GetGlobal()
+}
+
+// Gateways gets the cluster gateways.
+func (hc *HealthChecker) Gateways(ctx context.Context, req *pb.GatewaysRequest) (*pb.GatewaysResponse, error) {
+	return hc.apiClient.Gateways(ctx, req)
+}
+
 func (hc *HealthChecker) runCheck(categoryID CategoryID, c *Checker, observer CheckObserver) bool {
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 		defer cancel()
 		err := c.check(ctx)
 		if se, ok := err.(*SkipError); ok {
@@ -1600,7 +1609,7 @@ func (hc *HealthChecker) runCheck(categoryID CategoryID, c *Checker, observer Ch
 func (hc *HealthChecker) runCheckRPC(categoryID CategoryID, c *Checker, observer CheckObserver) bool {
 	observedResults := []CheckResult{}
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 		defer cancel()
 		checkRsp, err := c.checkRPC(ctx)
 		if se, ok := err.(*SkipError); ok {
@@ -1890,49 +1899,16 @@ func (hc *HealthChecker) expectedRBACNames() []string {
 	}
 }
 
-func (hc *HealthChecker) checkRoles(ctx context.Context, shouldExist bool, namespace string, expectedNames []string, labelSelector string) error {
-	options := metav1.ListOptions{
-		LabelSelector: labelSelector,
-	}
-	crList, err := hc.kubeAPI.RbacV1().Roles(namespace).List(ctx, options)
-	if err != nil {
-		return err
-	}
-
-	objects := []runtime.Object{}
-
-	for _, item := range crList.Items {
-		item := item // pin
-		objects = append(objects, &item)
-	}
-
-	return checkResources("Roles", objects, expectedNames, shouldExist)
-}
-
-func (hc *HealthChecker) checkRoleBindings(ctx context.Context, shouldExist bool, namespace string, expectedNames []string, labelSelector string) error {
-	options := metav1.ListOptions{
-		LabelSelector: labelSelector,
-	}
-	crbList, err := hc.kubeAPI.RbacV1().RoleBindings(namespace).List(ctx, options)
-	if err != nil {
-		return err
-	}
-
-	objects := []runtime.Object{}
-
-	for _, item := range crbList.Items {
-		item := item // pin
-		objects = append(objects, &item)
-	}
-
-	return checkResources("RoleBindings", objects, expectedNames, shouldExist)
-}
-
 func (hc *HealthChecker) checkClusterRoles(ctx context.Context, shouldExist bool, expectedNames []string, labelSelector string) error {
+	return CheckClusterRoles(ctx, hc.kubeAPI, shouldExist, expectedNames, labelSelector)
+}
+
+// CheckClusterRoles checks that the expected ClusterRoles exist.
+func CheckClusterRoles(ctx context.Context, kubeAPI *k8s.KubernetesAPI, shouldExist bool, expectedNames []string, labelSelector string) error {
 	options := metav1.ListOptions{
 		LabelSelector: labelSelector,
 	}
-	crList, err := hc.kubeAPI.RbacV1().ClusterRoles().List(ctx, options)
+	crList, err := kubeAPI.RbacV1().ClusterRoles().List(ctx, options)
 	if err != nil {
 		return err
 	}
@@ -1948,10 +1924,15 @@ func (hc *HealthChecker) checkClusterRoles(ctx context.Context, shouldExist bool
 }
 
 func (hc *HealthChecker) checkClusterRoleBindings(ctx context.Context, shouldExist bool, expectedNames []string, labelSelector string) error {
+	return CheckClusterRoleBindings(ctx, hc.kubeAPI, shouldExist, expectedNames, labelSelector)
+}
+
+// CheckClusterRoleBindings checks that the expected ClusterRoleBindings exist.
+func CheckClusterRoleBindings(ctx context.Context, kubeAPI *k8s.KubernetesAPI, shouldExist bool, expectedNames []string, labelSelector string) error {
 	options := metav1.ListOptions{
 		LabelSelector: labelSelector,
 	}
-	crbList, err := hc.kubeAPI.RbacV1().ClusterRoleBindings().List(ctx, options)
+	crbList, err := kubeAPI.RbacV1().ClusterRoleBindings().List(ctx, options)
 	if err != nil {
 		return err
 	}
@@ -2228,24 +2209,6 @@ func (hc *HealthChecker) getDataPlanePods(ctx context.Context) ([]*pb.Pod, error
 	return pods, nil
 }
 
-func (hc *HealthChecker) checkCanPerformAction(ctx context.Context, api *k8s.KubernetesAPI, verb, namespace, group, version, resource string) error {
-	if api == nil {
-		// we should never get here
-		return fmt.Errorf("unexpected error: Kubernetes ClientSet not initialized")
-	}
-
-	return k8s.ResourceAuthz(
-		ctx,
-		api,
-		namespace,
-		verb,
-		group,
-		version,
-		resource,
-		"",
-	)
-}
-
 func (hc *HealthChecker) checkHAMetadataPresentOnKubeSystemNamespace(ctx context.Context) error {
 	ns, err := hc.kubeAPI.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
 	if err != nil {
@@ -2261,7 +2224,7 @@ func (hc *HealthChecker) checkHAMetadataPresentOnKubeSystemNamespace(ctx context
 }
 
 func (hc *HealthChecker) checkCanCreate(ctx context.Context, namespace, group, version, resource string) error {
-	return hc.checkCanPerformAction(ctx, hc.kubeAPI, "create", namespace, group, version, resource)
+	return CheckCanPerformAction(ctx, hc.kubeAPI, "create", namespace, group, version, resource)
 }
 
 func (hc *HealthChecker) checkCanCreateNonNamespacedResources(ctx context.Context) error {
@@ -2312,7 +2275,7 @@ func (hc *HealthChecker) checkCanCreateNonNamespacedResources(ctx context.Contex
 }
 
 func (hc *HealthChecker) checkCanGet(ctx context.Context, namespace, group, version, resource string) error {
-	return hc.checkCanPerformAction(ctx, hc.kubeAPI, "get", namespace, group, version, resource)
+	return CheckCanPerformAction(ctx, hc.kubeAPI, "get", namespace, group, version, resource)
 }
 
 func (hc *HealthChecker) checkAPIService(ctx context.Context, serviceName string) error {
@@ -2432,6 +2395,65 @@ func (cr *CheckResult) alreadyObserved(previousResults []CheckResult) bool {
 		}
 	}
 	return false
+}
+
+// CheckRoles checks that the expected roles exist.
+func CheckRoles(ctx context.Context, kubeAPI *k8s.KubernetesAPI, shouldExist bool, namespace string, expectedNames []string, labelSelector string) error {
+	options := metav1.ListOptions{
+		LabelSelector: labelSelector,
+	}
+	crList, err := kubeAPI.RbacV1().Roles(namespace).List(ctx, options)
+	if err != nil {
+		return err
+	}
+
+	objects := []runtime.Object{}
+
+	for _, item := range crList.Items {
+		item := item // pin
+		objects = append(objects, &item)
+	}
+
+	return checkResources("Roles", objects, expectedNames, shouldExist)
+}
+
+// CheckRoleBindings checks that the expected RoleBindings exist.
+func CheckRoleBindings(ctx context.Context, kubeAPI *k8s.KubernetesAPI, shouldExist bool, namespace string, expectedNames []string, labelSelector string) error {
+	options := metav1.ListOptions{
+		LabelSelector: labelSelector,
+	}
+	crbList, err := kubeAPI.RbacV1().RoleBindings(namespace).List(ctx, options)
+	if err != nil {
+		return err
+	}
+
+	objects := []runtime.Object{}
+
+	for _, item := range crbList.Items {
+		item := item // pin
+		objects = append(objects, &item)
+	}
+
+	return checkResources("RoleBindings", objects, expectedNames, shouldExist)
+}
+
+// CheckCanPerformAction checks if a given k8s client is authorized to perform a given action.
+func CheckCanPerformAction(ctx context.Context, api *k8s.KubernetesAPI, verb, namespace, group, version, resource string) error {
+	if api == nil {
+		// we should never get here
+		return fmt.Errorf("unexpected error: Kubernetes ClientSet not initialized")
+	}
+
+	return k8s.ResourceAuthz(
+		ctx,
+		api,
+		namespace,
+		verb,
+		group,
+		version,
+		resource,
+		"",
+	)
 }
 
 // getPodStatuses returns a map of all Linkerd container statuses:
