@@ -21,8 +21,10 @@ global:
   controlPlaneTracing: false
 
   # control plane version. See Proxy section for proxy version
-  linkerdVersion: &linkerd_version linkerdVersionValue
+  linkerdVersion: &linkerd_version stable-2.9.1
 
+  # GS changes: currently this value isn't used - the namespace
+  # is taken from the .Release.Namespace value.
   namespace: linkerd
 
   # enables the use of EndpointSlice informers for the destination service;
@@ -35,9 +37,30 @@ global:
   # requires the linkerd-cni plugin to already be installed
   cniEnabled: false
 
+  # GS changes: needed now as global value to be available in subcharts including partials/_proxy.tpl
+  # Set to linkerd.io/tls to use a pre-created CA provided via global.identityTrustAnchorsPEM (this
+  # is the upstream method.
+  # Set to kubernetes.io/tls to use cert-manager as a TLS issuer (default behaviour; requires
+  # cert-manager to be pre-installed).
+  identity:
+    issuer:
+      scheme: &identity_issuer_scheme kubernetes.io/tls
+
   identityTrustAnchorsPEM: |
 
+  # GS changes: support older version of cert-manager's API. Setting this to anything later
+  # than 0.11.0 will use the new API version and API group.
+  certManager:
+    version: 1.0.2
+
   identityTrustDomain: *cluster_domain
+
+  # GS changes: subcharts aren't included in this chart, but the variables are retained
+  # for ease of upstream compatibility.
+  grafana:
+    enabled: &grafana_enabled false
+  tracing:
+    enabled: &tracing_enabled false
 
   # url of existing prometheus
   prometheusUrl: ""
@@ -56,7 +79,7 @@ global:
     outboundConnectTimeout: 1000ms
     inboundConnectTimeout: 100ms
     image:
-      name: cr.l5d.io/linkerd/proxy
+      name: quay.io/giantswarm/linkerd2-proxy
       pullPolicy: *image_pull_policy
       version: *linkerd_version
     logLevel: warn,linkerd=info
@@ -99,7 +122,7 @@ global:
     ignoreInboundPorts: "25,443,587,3306,11211,5432"
     ignoreOutboundPorts: "25,443,587,3306,11211,5432"
     image:
-      name: cr.l5d.io/linkerd/proxy-init
+      name: quay.io/giantswarm/linkerd2-proxy-init
       pullPolicy: *image_pull_policy
       version: v1.3.9
     resources:
@@ -139,7 +162,7 @@ omitWebhookSideEffects: false
 webhookFailurePolicy: Ignore
 
 # controller configuration
-controllerImage: cr.l5d.io/linkerd/controller
+controllerImage: quay.io/giantswarm/linkerd2-controller
 controllerReplicas: 1
 controllerUID: 2103
 
@@ -147,8 +170,8 @@ controllerUID: 2103
 # destination configuration
 # set resources for the sp-validator and its linkerd proxy respectively
 # see global.proxy.resources for details.
-#destinationResources:
-#destinationProxyResources:
+# destinationResources:
+# destinationProxyResources:
 
 
 # web dashboard configuration
@@ -158,14 +181,14 @@ dashboard:
 # debug configuration
 debugContainer:
   image:
-    name: cr.l5d.io/linkerd/debug
+    name: quay.io/giantswarm/linkerd2-debug
     pullPolicy: *image_pull_policy
     version: *linkerd_version
 
 # identity configuration
 identity:
   issuer:
-    scheme: linkerd.io/tls
+    scheme: *identity_issuer_scheme
 
     clockSkewAllowance: 20s
 
@@ -186,8 +209,8 @@ identity:
 
 # set resources for identity and its linkerd proxy respectively
 # see global.proxy.resources for details.
-#identityResources:
-#identityProxyResources:
+# identityResources:
+# identityProxyResources:
 
 # heartbeat configuration
 disableHeartBeat: false
@@ -215,8 +238,8 @@ proxyInjector:
 
 # set resources for proxy injector and its linkerd proxy respectively
 # see global.proxy.resources for details.
-#proxyInjectorResources:
-#proxyInjectorProxyResources:
+# proxyInjectorResources:
+# proxyInjectorProxyResources:
 
 # service profile validator configuration
 profileValidator:
@@ -240,13 +263,13 @@ profileValidator:
 
 # set resources for the sp-validator and its linkerd proxy respectively
 # see global.proxy.resources for details.
-#spValidatorResources:
-#spValidatorProxyResources:
+# spValidatorResources:
+# spValidatorProxyResources:
 
 # set resources for controllers public API and its linkerd proxy respectively
 # see global.proxy.resources for details.
-#publicAPIResources:
-#publicAPIProxyResources:
+# publicAPIResources:
+# publicAPIProxyResources:
 
 # tap configuration
 tap:
@@ -261,23 +284,26 @@ tap:
 
 # set resources for tap and its linkerd proxy respectively
 # see global.proxy.resources for details.
-#tapResources:
-#tapProxyResources:
+# tapResources:
+# tapProxyResources:
 
 # web configuration
-webImage: cr.l5d.io/linkerd/web
+webImage: quay.io/giantswarm/linkerd2-web
 # set resources for web UI and its linkerd proxy respectively
 # see global.proxy.resources for details.
-#webResources:
-#webProxyResources:
+# webResources:
+# webProxyResources:
 
 
+# GS changes: the namespace is pre-created by chart-operator, therefore this should
+# always be set to false.
+#
 # If the namespace is controlled by an external tool or can't be installed with Helm
 # you can disable its installation. In this case:
 # - The namespace created by the external tool must match the namespace value above
 # - The external tool needs to create the namespace with the label:
 #     config.linkerd.io/admission-webhooks: disabled
-installNamespace: true
+installNamespace: false
 
 # Node selection constraints for control-plane components
 # https://kubernetes.io/docs/concepts/configuration/assign-pod-node/#nodeselector.
@@ -286,24 +312,19 @@ nodeSelector:
 
 # Tolerations constraints for control-plane components
 # https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/
-#tolerations:
+# tolerations:
 
 # Configuration for Add-ons
 # Full configuration fields https://github.com/linkerd/linkerd2/tree/master/charts/linkerd2#add-ons-configuration
 
+# GS changes: Grafana subchart is removed, but this value is retained for
+# ease of upstream compatibility.
 grafana:
-  enabled: true
-  # image:
-  #   name: cr.l5d.io/linkerd/grafana
-  #   tag: latest
-  # set resource requests and limits for grafana and its linkerd proxy respectively
-  # see global.proxy.resources in the linkerd2 chart for details.
-  # resources:
-  # proxy:
-  #   resources:
+  enabled: *grafana_enabled
+
 
 prometheus:
-  enabled: true
+  enabled: false
   # image: prom/prometheus:v2.15.3
   # args:
   #  storage.tsdb.retention.time: 6h
@@ -373,11 +394,14 @@ prometheus:
   # proxy:
   #   resources:
 
+# GS changes: tracing subchart is removed, but this value is retained for
+# ease of upstream compatibility.
 tracing:
-  enabled: false
-  # collector:
-  #  image: omnition/opencensus-collector:0.1.11
-  #  resources:
-  # jaeger:
-  #  image: jaegertracing/all-in-one:1.19.2
-  #  resources:
+  enabled: *tracing_enabled
+
+
+kubectlImage:
+  registry: quay.io
+  name: giantswarm/docker-kubectl
+  tag: 933ac043b7bec33104aac58b16849ea28bace26c
+  pullPolicy: IfNotPresent
