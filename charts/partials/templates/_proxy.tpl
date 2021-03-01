@@ -13,7 +13,7 @@ env:
 - name: LINKERD2_PROXY_LOG_FORMAT
   value: {{.Values.global.proxy.logFormat | quote}}
 - name: LINKERD2_PROXY_DESTINATION_SVC_ADDR
-  value: {{ternary "localhost.:8086" (printf "linkerd-dst-headless.%s.svc.%s:8086" .Values.global.namespace .Values.global.clusterDomain) (eq (toString .Values.global.proxy.component) "linkerd-destination")}}
+  value: {{ternary "localhost.:8086" (printf "linkerd-dst-headless.%s.svc.%s:8086" .Release.Namespace .Values.global.clusterDomain) (eq (toString .Values.global.proxy.component) "linkerd-destination")}}
 - name: LINKERD2_PROXY_DESTINATION_PROFILE_NETWORKS
   value: {{.Values.global.clusterNetworks | quote}}
 {{ if .Values.global.proxy.inboundConnectTimeout -}}
@@ -73,18 +73,26 @@ env:
 - name: LINKERD2_PROXY_IDENTITY_DIR
   value: /var/run/linkerd/identity/end-entity
 - name: LINKERD2_PROXY_IDENTITY_TRUST_ANCHORS
+{{- if eq .Values.identity.issuer.scheme "kubernetes.io/tls" }}
+  valueFrom:
+    secretKeyRef:
+      name: linkerd-identity-issuer
+      key: ca.crt
+{{- end }}
+{{- if eq .Values.identity.issuer.scheme "linkerd.io/tls" }}
   value: |
   {{- required "Please provide the identity trust anchors" .Values.global.identityTrustAnchorsPEM | trim | nindent 4 }}
+{{- end }}
 - name: LINKERD2_PROXY_IDENTITY_TOKEN_FILE
   value: /var/run/secrets/kubernetes.io/serviceaccount/token
 - name: LINKERD2_PROXY_IDENTITY_SVC_ADDR
-  value: {{ternary "localhost.:8080" (printf "linkerd-identity-headless.%s.svc.%s:8080" .Values.global.namespace .Values.global.clusterDomain) (eq (toString .Values.global.proxy.component) "linkerd-identity")}}
+  value: {{ternary "localhost.:8080" (printf "linkerd-identity-headless.%s.svc.%s:8080" .Release.Namespace .Values.global.clusterDomain) (eq (toString .Values.global.proxy.component) "linkerd-identity")}}
 - name: _pod_sa
   valueFrom:
     fieldRef:
       fieldPath: spec.serviceAccountName
 - name: _l5d_ns
-  value: {{.Values.global.namespace}}
+  value: {{.Release.Namespace}}
 - name: _l5d_trustdomain
   value: {{.Values.global.identityTrustDomain}}
 - name: LINKERD2_PROXY_IDENTITY_LOCAL_NAME
